@@ -140,10 +140,11 @@
         table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
         th, td { border: 1px solid var(--border-color); padding: 10px; text-align: center; }
         th { background-color: #f8f9fa; }
-
-        #file-input { display: none; }
         
         .empty-state { text-align: center; color: var(--text-light); padding: 40px 0; }
+        
+        /* 載入中動畫 */
+        #loading-area { text-align: center; padding: 40px 0; font-size: 1.2em; color: var(--primary-color); }
     </style>
 </head>
 <body>
@@ -162,11 +163,13 @@
                 <input type="number" id="question-count" min="1" value="10">
                 <button onclick="handleCountSet()">抽取重置</button>
             </div>
-            <button onclick="handleUploadClick()" class="btn-info">上传/更换题库</button>
-            <input type="file" id="file-input" accept=".xls,.xlsx" onchange="processExcel(event)">
             <button onclick="openHistory()" class="btn-info">查看记录</button>
         </div>
         <div id="bank-info" style="margin-top: 15px; font-size: 0.9em; color: var(--text-light);"></div>
+    </div>
+
+    <div class="card" id="loading-area">
+        🔄 正在從伺服器載入題庫，請稍候...
     </div>
 
     <div class="card" id="quiz-area">
@@ -182,8 +185,8 @@
         </div>
     </div>
     
-    <div class="card empty-state" id="empty-area">
-        请先上传Excel题库。
+    <div class="card empty-state" id="empty-area" style="display:none;">
+        ⚠️ 題庫載入失敗，請確認 data.xlsx 檔案是否存在。
     </div>
 </div>
 
@@ -204,25 +207,23 @@
 <script>
     // 状态管理
     const state = {
-        questionBank: [],    // 总题库
-        currentQuiz: [],     // 当前抽取的练习题
-        currentIndex: 0,     // 当前题目索引
-        correctCount: 0,     // 答对数量
-        userName: '匿名',    // 用户名
-        practiceCount: 10,   // 练习数量
-        quizInProgress: false, // 是否正在练习中（防止误触）
-        history: []          // 历史记录
+        questionBank: [],    
+        currentQuiz: [],     
+        currentIndex: 0,     
+        correctCount: 0,     
+        userName: '匿名',    
+        practiceCount: 10,   
+        quizInProgress: false, 
+        history: []          
     };
 
-    // 初始化
-    function init() {
-        // 从 localStorage 恢复数据
-        const savedBank = localStorage.getItem('questionBank');
+    // 網頁載入時初始化
+    window.onload = function() {
+        // 恢復使用者設定
         const savedHistory = localStorage.getItem('quizHistory');
         const savedName = localStorage.getItem('userName');
         const savedCount = localStorage.getItem('practiceCount');
 
-        if (savedBank) state.questionBank = JSON.parse(savedBank);
         if (savedHistory) state.history = JSON.parse(savedHistory);
         if (savedName) {
             state.userName = savedName;
@@ -233,12 +234,68 @@
             document.getElementById('question-count').value = state.practiceCount;
         }
 
-        updateBankInfo();
+        // 自動去抓同目錄下的 Excel 檔案
+        loadExcelFromUrl();
+    };
 
-        if (state.questionBank.length > 0) {
-            document.getElementById('empty-area').style.display = 'none';
+    // 自動獲取並解析 Excel 
+    async function loadExcelFromUrl() {
+        try {
+            // 抓取名為 data.xlsx 的檔案
+            const response = await fetch('./data.xlsx');
+            if (!response.ok) throw new Error("檔案不存在");
+            
+            const arrayBuffer = await response.arrayBuffer();
+            const data = new Uint8Array(arrayBuffer);
+            const workbook = XLSX.read(data, {type: 'array'});
+            
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            const rows = XLSX.utils.sheet_to_json(worksheet, {header: 1, defval: null});
+            
+            if (rows.length < 2) throw new Error("文件内容为空或格式不正确");
+
+            const newBank = [];
+            for (let i = 1; i < rows.length; i++) {
+                const row = rows[i];
+                if (!row || row.length === 0 || !row[0]) continue; 
+                
+                const questionText = String(row[0]).trim();
+                const rawOptions = [];
+                for(let j=1; j<=4; j++) {
+                    if (row[j] !== null && row[j] !== undefined && String(row[j]).trim() !== '') {
+                        rawOptions.push(String(row[j]).trim());
+                    }
+                }
+                
+                const ansStr = String(row[5] || '').trim().toUpperCase();
+                const ansIndex = ansStr.charCodeAt(0) - 65; 
+                
+                if (ansIndex < 0 || ansIndex >= rawOptions.length) continue;
+
+                const correctContent = String(rawOptions[ansIndex]);
+                const standardOptions = rawOptions.map(opt => ({
+                    content: String(opt),
+                    isCorrect: String(opt) === correctContent
+                }));
+
+                newBank.push({
+                    title: questionText,
+                    options: standardOptions
+                });
+            }
+
+            state.questionBank = newBank;
+            
+            document.getElementById('loading-area').style.display = 'none';
             document.getElementById('quiz-area').style.display = 'block';
+            updateBankInfo();
             resetQuiz();
+            
+        } catch (err) {
+            console.error("載入題庫失敗:", err);
+            document.getElementById('loading-area').style.display = 'none';
+            document.getElementById('empty-area').style.display = 'block';
         }
     }
 
@@ -246,10 +303,8 @@
     function updateBankInfo() {
         const infoEle = document.getElementById('bank-info');
         if (state.questionBank.length > 0) {
-            infoEle.innerText = `当前题库已加载：共 ${state.questionBank.length} 题。`;
+            infoEle.innerText = `當前已自動載入題庫：共 ${state.questionBank.length} 題。`;
             document.getElementById('question-count').max = state.questionBank.length;
-        } else {
-            infoEle.innerText = '暂无题库，请上传。';
         }
     }
 
@@ -290,94 +345,6 @@
         });
     }
 
-    // 处理上传按钮点击
-    function handleUploadClick() {
-        if (state.questionBank.length > 0) {
-            const pwd = prompt("更换题库需输入密码验证：");
-            if (pwd !== '6666') {
-                alert("密码错误，操作取消。");
-                return;
-            }
-        }
-        document.getElementById('file-input').click();
-    }
-
-    // 解析 Excel 文件
-    function processExcel(e) {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = function(evt) {
-            try {
-                const data = new Uint8Array(evt.target.result);
-                const workbook = XLSX.read(data, {type: 'array'});
-                const sheetName = workbook.SheetNames[0];
-                const worksheet = workbook.Sheets[sheetName];
-                // 按二维数组读取
-                const rows = XLSX.utils.sheet_to_json(worksheet, {header: 1, defval: null});
-                
-                if (rows.length < 2) throw new Error("文件内容为空或格式不正确");
-
-                const newBank = [];
-                // 第一行是表头，从索引1开始读取
-                for (let i = 1; i < rows.length; i++) {
-                    const row = rows[i];
-                    if (!row || row.length === 0 || !row[0]) continue; // 跳过空行
-                    
-                    const questionText = String(row[0]).trim();
-                    const rawOptions = [];
-                    // 选项 A, B, C, D 在索引 1, 2, 3, 4
-                    for(let j=1; j<=4; j++) {
-                        if (row[j] !== null && row[j] !== undefined && String(row[j]).trim() !== '') {
-                            rawOptions.push(String(row[j]).trim());
-                        }
-                    }
-                    
-                    // 答案在索引 5
-                    const ansStr = String(row[5] || '').trim().toUpperCase();
-                    // 将字母答案（A, B, C, D）转换为索引
-                    const ansIndex = ansStr.charCodeAt(0) - 65; 
-                    
-                    if (ansIndex < 0 || ansIndex >= rawOptions.length) {
-                        console.warn(`第 ${i+1} 行答案无效，已跳过。`);
-                        continue;
-                    }
-
-                    const correctContent = String(rawOptions[ansIndex]);
-                    
-                    // 构建标准化选项对象
-                    const standardOptions = rawOptions.map(opt => ({
-                        content: String(opt),
-                        isCorrect: String(opt) === correctContent
-                    }));
-
-                    newBank.push({
-                        title: questionText,
-                        options: standardOptions
-                    });
-                }
-
-                if (newBank.length === 0) throw new Error("未能解析出有效的题目，请检查格式。");
-
-                state.questionBank = newBank;
-                localStorage.setItem('questionBank', JSON.stringify(state.questionBank));
-                
-                document.getElementById('empty-area').style.display = 'none';
-                document.getElementById('quiz-area').style.display = 'block';
-                updateBankInfo();
-                resetQuiz();
-                alert(`成功导入 ${newBank.length} 道题目！`);
-                
-            } catch (err) {
-                alert("解析文件失败：" + err.message);
-            }
-            // 清空 input，允许重复上传同一文件
-            e.target.value = '';
-        };
-        reader.readAsArrayBuffer(file);
-    }
-
     // 重置练习状态
     function resetQuiz() {
         if (state.questionBank.length === 0) return;
@@ -387,12 +354,11 @@
 
         // 随机抽取不重复的题目
         const shuffledBank = [...state.questionBank].sort(() => Math.random() - 0.5);
-        // 深拷贝，避免污染题库选项顺序
         state.currentQuiz = JSON.parse(JSON.stringify(shuffledBank.slice(0, count)));
         
         state.currentIndex = 0;
         state.correctCount = 0;
-        state.quizInProgress = false; // 开始前不算进行中
+        state.quizInProgress = false; 
         
         renderQuestion();
     }
@@ -415,19 +381,14 @@
         let displayTitle = isTF ? `【判断题】 ${q.title}` : `【单选题】 ${q.title}`;
         titleEle.innerText = displayTitle;
 
-        // 处理选项顺序
         let currentOptions = q.options;
         if (!isTF && currentOptions.length >= 3) {
-            // 随机打乱选项
             currentOptions.sort(() => Math.random() - 0.5);
         }
 
-        // 生成 DOM
         container.innerHTML = '';
         currentOptions.forEach((opt, idx) => {
-            // 动态分配 A, B, C...
             const labelChar = String.fromCharCode(65 + idx);
-            // 缓存打乱后的正确答案文本用于后续展示
             if(opt.isCorrect) q.correctLabel = labelChar;
 
             const labelEle = document.createElement('label');
@@ -448,7 +409,7 @@
             return;
         }
 
-        state.quizInProgress = true; // 标记练习进行中
+        state.quizInProgress = true;
         const selectedIndex = parseInt(selected.value);
         const q = state.currentQuiz[state.currentIndex];
         const isCorrect = q.options[selectedIndex].isCorrect;
@@ -456,10 +417,8 @@
         const optionsEles = document.querySelectorAll('.option-item');
         const feedbackEle = document.getElementById('feedback');
 
-        // 锁定选项
         document.querySelectorAll('input[name="current-opt"]').forEach(el => el.disabled = true);
 
-        // 标记颜色
         optionsEles.forEach((el, idx) => {
             if (q.options[idx].isCorrect) {
                 el.classList.add('correct');
@@ -488,7 +447,6 @@
         }
     }
 
-    // 下一题 / 完成练习
     function nextQuestion() {
         if (state.currentIndex < state.currentQuiz.length - 1) {
             state.currentIndex++;
@@ -498,7 +456,6 @@
         }
     }
 
-    // 完成练习保存记录
     function finishQuiz() {
         const total = state.currentQuiz.length;
         const correct = state.correctCount;
@@ -514,16 +471,15 @@
             time: timeStr
         };
 
-        state.history.unshift(record); // 插入到头部
+        state.history.unshift(record); 
         localStorage.setItem('quizHistory', JSON.stringify(state.history));
         
-        state.quizInProgress = false; // 结束练习
+        state.quizInProgress = false; 
         
         alert(`🎉 练习完成！\n总题数：${total}\n答对：${correct}\n正确率：${accuracy}`);
         resetQuiz();
     }
 
-    // 历史记录控制
     function openHistory() {
         const container = document.getElementById('history-table-container');
         if (state.history.length === 0) {
@@ -555,14 +511,13 @@
         if (pwd === '6666') {
             state.history = [];
             localStorage.setItem('quizHistory', JSON.stringify(state.history));
-            openHistory(); // 刷新表格
+            openHistory();
             alert("记录已清空。");
         } else {
             alert("密码错误，操作取消。");
         }
     }
 
-    // 导出 CSV
     function exportHistory() {
         if (state.history.length === 0) return alert("没有可以导出的记录。");
         
@@ -581,9 +536,6 @@
         link.click();
         document.body.removeChild(link);
     }
-
-    // 页面加载运行
-    window.onload = init;
 </script>
 
 </body>
